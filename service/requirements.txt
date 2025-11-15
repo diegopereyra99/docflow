@@ -1,0 +1,6 @@
+functions-framework==3.*
+google-cloud-aiplatform>=1.66.0
+google-auth>=2.23.0
+Flask>=2.3.0
+google-cloud-pubsub
+google-cloud-storage
