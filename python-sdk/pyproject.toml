@@ -1,7 +1,7 @@
 [project]
-name = "document-analyzer"
+name = "ai-document-analyzer"
 version = "0.1.0"
-description = "Python client SDK for Diego's document analysis service"
+description = "Python client SDK for Diego's AI-powered document analysis service"
 authors = [{ name = "Diego Pereyra" }]
 requires-python = ">=3.10"
 dependencies = [

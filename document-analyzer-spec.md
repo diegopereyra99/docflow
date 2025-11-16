@@ -1,8 +1,8 @@
-# Document Analyzer – Technical Specification
+# AI Document Analyzer – Technical Specification
 
 ## 1. Purpose
 
-Document Analyzer is a generic, reusable service for **document understanding and structured extraction** using LLMs (Gemini or any future model). It is designed to be product-grade and client-agnostic. Scienza is simply one of the consumers of this service.
+AI Document Analyzer is a generic, reusable service for **document understanding and structured extraction** using LLMs (Gemini or any future model). It is designed to be product-grade and client-agnostic. Scienza is simply one of the consumers of this service.
 
 The system consists of:
 
@@ -22,10 +22,10 @@ The system consists of:
 
 ## 2. Repository Structure
 
-Suggested repo name: *to be chosen later* (placeholder: `document-analyzer`).
+Suggested repo name: *to be chosen later* (placeholder: `ai-document-analyzer`).
 
 ```
-document-analyzer/
+ai-document-analyzer/
   service/
     main.py
     requirements.txt
@@ -301,7 +301,7 @@ SDK should pre-register:
 
 ## 7. Integration with Scienza
 
-Once Document Analyzer is ready:
+Once AI Document Analyzer is ready:
 
 ### Step 1 — Deploy service to Cloud Run
 - Disable unauthenticated access
@@ -311,7 +311,7 @@ Once Document Analyzer is ready:
 
 ### Step 2 — Install SDK in Scienza
 ```
-pip install -e ~/Desktop/ai/document-analyzer/python-sdk
+pip install -e ~/Desktop/ai/ai-document-analyzer/python-sdk
 ```
 
 ### Step 3 — Register Scienza-specific profiles
@@ -353,4 +353,4 @@ Use them within:
 
 ---
 
-This spec defines the architecture, interfaces, roadmap, and all remaining work required for a clean, reusable, production‑ready Document Analyzer system.
+This spec defines the architecture, interfaces, roadmap, and all remaining work required for a clean, reusable, production‑ready AI Document Analyzer system.

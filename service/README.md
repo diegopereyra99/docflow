@@ -1,4 +1,4 @@
-# Document Analyzer Service (HTTP)
+# AI Document Analyzer Service (HTTP)
 
 HTTP service that exposes `/extract` for structured document extraction and `/health` for health checks.  
 It uses Vertex AI Gemini via service account when enabled; otherwise it returns a local stub response
