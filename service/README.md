@@ -1,11 +1,40 @@
-# Extract Data HTTP API (Standalone)
+# Document Analyzer Service (HTTP)
 
-Single HTTP endpoint `/extract-data` that accepts JSON or multipart (files[]) and returns structured JSON. Runs locally with a stubbed response by default, or calls Vertex AI Gemini when enabled via environment variables and a service account.
+HTTP service that exposes `/extract` for structured document extraction and `/health` for health checks.  
+It uses Vertex AI Gemini via service account when enabled; otherwise it returns a local stub response
+that matches the requested schema. All responses share a unified JSON envelope:
+
+```jsonc
+{
+  "data": { /* extracted data or null on error */ },
+  "meta": {
+    "status": "ok" | "error",
+    "trace_id": "uuid",
+    "model": "gemini-2.5-flash",
+    "tokens_input": 123,
+    "tokens_output": 45,
+    "files_processed": 1,
+    "http_status": 400 // only for errors
+  },
+  "errors": [
+    {
+      "code": "unsupported_file_type",
+      "message": "File type 'application/zip' is not supported",
+      "field": "files[0]",
+      "details": {
+        "mime_type": "application/zip",
+        "filename": "archive.zip",
+        "supported_mime_types": ["application/pdf", "..."]
+      }
+    }
+  ]
+}
+```
 
 This folder is self-contained. You can copy it elsewhere and use it independently of the rest of the repo.
 
 ## Contents
-- `main.py` — Cloud Functions Gen2 HTTP handler (`extract_data`).
+- `main.py` — Cloud Run/Flask HTTP app (`/extract`, `/health`, `/events`).
 - `requirements.txt` — Python dependencies.
 - `README.md` — This guide.
 
@@ -25,10 +54,51 @@ This folder is self-contained. You can copy it elsewhere and use it independentl
 Schema validation
 - The service parses `schema` and performs lenient structural checks compatible with common JSON Schema/Pydantic constructs (integer/number/string/boolean/null/object/array, union types, $ref, anyOf/oneOf/allOf). The model remains the final authority for validity.
 
+## Supported file types (Gemini)
+
+The `/extract` endpoint enforces a strict whitelist of MIME types. If any file in the request is not
+in this list, the entire request fails with:
+
+- HTTP 400
+- `errors[0].code = "unsupported_file_type"`
+- `errors[0].details.supported_mime_types` listing all allowed types.
+
+Currently allowed MIME types:
+
+- Documents / text:
+  - `application/pdf`
+  - `text/plain`
+  - `text/html`
+  - `text/markdown`
+- Images:
+  - `image/png`
+  - `image/jpeg`
+  - `image/webp`
+  - `image/heic`
+  - `image/heif`
+- Audio:
+  - `audio/wav`
+  - `audio/x-wav`
+  - `audio/mpeg`
+  - `audio/mp3`
+  - `audio/ogg`
+  - `audio/flac`
+- Video:
+  - `video/mp4`
+  - `video/mpeg`
+
+Examples of rejected types:
+
+- `application/zip`
+- `application/vnd.ms-excel`
+- `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`
+
+For these, you will see a self-explanatory error with the unsupported MIME and the whitelist.
+
 ## Run Locally
 1) Copy and edit env file:
-   ```bash
-   cd extract-data-http
+  ```bash
+  cd extract-data-http
    cp .env.example .env
    # edit .env as needed
    ```
@@ -39,13 +109,14 @@ Schema validation
    source .venv/bin/activate
    pip install -r requirements.txt
    # Local stub mode (no Vertex calls)
-   python -m functions_framework --target=extract_data --port=8080 --debug
+   export GOOGLE_GENAI_USE_VERTEXAI=false
+   python -m flask --app service.main run --port=8080
    ```
 
 3) Call the API
    - JSON example (no files):
      ```bash
-     curl -s -X POST http://localhost:8080/extract-data \
+     curl -s -X POST http://localhost:8080/extract \
        -H 'Content-Type: application/json' \
        -d '{
          "prompt":"Extract basic fields",
@@ -55,7 +126,7 @@ Schema validation
      ```
    - JSON with URI-based files (Vertex mode only):
      ```bash
-     curl -s -X POST http://localhost:8080/extract-data \
+     curl -s -X POST http://localhost:8080/extract \
        -H 'Content-Type: application/json' \
        -d '{
          "prompt":"Extract from URI",
@@ -66,7 +137,7 @@ Schema validation
      ```
    - Multipart with a file:
      ```bash
-     curl -s -X POST http://localhost:8080/extract-data \
+     curl -s -X POST http://localhost:8080/extract \
        -H 'Content-Type: multipart/form-data' \
        -F 'prompt=Extract fields from file' \
        -F 'schema={"type":"OBJECT","properties":{"name":{"type":"STRING"}},"required":["name"]}' \

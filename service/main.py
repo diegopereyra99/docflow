@@ -55,6 +55,33 @@ USE_VERTEX = os.environ.get("GOOGLE_GENAI_USE_VERTEXAI", "false").lower() in {"1
 OUTPUT_TOPIC = os.environ.get("PUBSUB_OUTPUT_TOPIC", "")
 BUCKET_NAME = os.environ.get("BUCKET_NAME", "")
 
+# Gemini (Vertex AI) supported MIME types (text, images, docs, audio, video).
+# This list is based on public Vertex AI Gemini documentation and can be
+# expanded if Google adds more types.
+SUPPORTED_MIME_TYPES = {
+    # Documents / text
+    "application/pdf",
+    "text/plain",
+    "text/html",
+    "text/markdown",
+    # Images
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "image/heic",
+    "image/heif",
+    # Audio
+    "audio/wav",
+    "audio/x-wav",
+    "audio/mpeg",
+    "audio/mp3",
+    "audio/ogg",
+    "audio/flac",
+    # Video
+    "video/mp4",
+    "video/mpeg",
+}
+
 # ~20 MB total payload limit for demo
 MAX_TOTAL_UPLOAD_BYTES = int(os.environ.get("MAX_TOTAL_UPLOAD_BYTES", str(20 * 1024 * 1024)))
 
@@ -84,29 +111,59 @@ def _cors_headers() -> Dict[str, str]:
     }
 
 
-def _bad_request(message: str, trace_id: str) -> Tuple[Dict[str, Any], int, Dict[str, str]]:
+def _error_response(
+    trace_id: str,
+    http_status: int,
+    code: str,
+    message: str,
+    field: str | None = None,
+    details: Dict[str, Any] | None = None,
+) -> Tuple[Dict[str, Any], int, Dict[str, str]]:
+    error_obj: Dict[str, Any] = {
+        "code": code,
+        "message": message,
+    }
+    if field is not None:
+        error_obj["field"] = field
+    if details is not None:
+        error_obj["details"] = details
+
     body = {
-        "ok": False,
-        "model": None,
         "data": None,
-        "usage": None,
-        "trace_id": trace_id,
-        "error": message,
+        "meta": {
+            "status": "error",
+            "trace_id": trace_id,
+            "http_status": http_status,
+        },
+        "errors": [error_obj],
     }
     headers = _cors_headers()
     headers["Content-Type"] = "application/json"
-    return body, 400, headers
+    return body, http_status, headers
+
+
+def _bad_request(
+    message: str,
+    trace_id: str,
+    code: str = "bad_request",
+    field: str | None = None,
+    details: Dict[str, Any] | None = None,
+) -> Tuple[Dict[str, Any], int, Dict[str, str]]:
+    return _error_response(trace_id, 400, code, message, field, details)
 
 
 def _too_large(message: str, trace_id: str) -> Tuple[Dict[str, Any], int, Dict[str, str]]:
-    body = {
-        "ok": False,
-        "model": None,
-        "data": None,
-        "usage": None,
-        "trace_id": trace_id,
-        "error": message,
-    }
+    # Use a specific code for payload/file size issues.
+    return _error_response(trace_id, 413, "file_too_large", message)
+
+
+def _server_error(
+    message: str,
+    trace_id: str,
+    code: str = "internal_error",
+) -> Tuple[Dict[str, Any], int, Dict[str, str]]:
+    return _error_response(trace_id, 500, code, message)
+
     headers = _cors_headers()
     headers["Content-Type"] = "application/json"
     return body, 413, headers
@@ -331,7 +388,11 @@ def extract_data(request):
         return ("", 204, _cors_headers())
 
     if request.method != "POST":
-        body, status, headers = _bad_request("Only POST is allowed", trace_id)
+        body, status, headers = _bad_request(
+            "Only POST is allowed",
+            trace_id,
+            code="method_not_allowed",
+        )
         return Response(response=json.dumps(body), status=status, headers=headers)
 
     content_type = request.headers.get("Content-Type", "")
@@ -357,7 +418,11 @@ def extract_data(request):
         except Exception:
             payload = None
         if not isinstance(payload, dict):
-            body, status, headers = _bad_request("Invalid JSON body", trace_id)
+            body, status, headers = _bad_request(
+                "Invalid JSON body",
+                trace_id,
+                code="invalid_json",
+            )
             return Response(response=json.dumps(body), status=status, headers=headers)
         prompt = payload.get("prompt", "")
         schema_str = payload.get("schema")
@@ -378,12 +443,40 @@ def extract_data(request):
                         files_unified.append({"name": name, "uri": uri, "mime": mime})
 
     if not schema_str:
-        body, status, headers = _bad_request("Missing 'schema'", trace_id)
+        body, status, headers = _bad_request(
+            "Missing 'schema'",
+            trace_id,
+            code="missing_field",
+            field="schema",
+        )
         return Response(response=json.dumps(body), status=status, headers=headers)
 
     if total_bytes > MAX_TOTAL_UPLOAD_BYTES:
-        body, status, headers = _too_large("Payload too large for demo; consider using GCS in V2.", trace_id)
+        body, status, headers = _too_large(
+            "Payload too large for demo; consider using GCS instead of direct upload.",
+            trace_id,
+        )
         return Response(response=json.dumps(body), status=status, headers=headers)
+
+    # Enforce supported MIME types: any unsupported file makes the whole request fail.
+    if files_unified:
+        for idx, f in enumerate(files_unified):
+            mime = (f.get("mime") or "").strip()
+            name = f.get("name") or ""
+            if not mime or mime not in SUPPORTED_MIME_TYPES:
+                details = {
+                    "mime_type": mime or "unknown",
+                    "filename": name,
+                    "supported_mime_types": sorted(SUPPORTED_MIME_TYPES),
+                }
+                body, status, headers = _bad_request(
+                    f"File type '{mime or 'unknown'}' is not supported",
+                    trace_id,
+                    code="unsupported_file_type",
+                    field=f"files[{idx}]",
+                    details=details,
+                )
+                return Response(response=json.dumps(body), status=status, headers=headers)
 
     try:
         data, usage, model_used = _execute_extraction(
@@ -395,13 +488,18 @@ def extract_data(request):
             trace_id=trace_id,
         )
     except Exception as e:
-        body, status, headers = _server_error(f"Model call failed: {e}", trace_id)
+        body, status, headers = _server_error(
+            f"Model call failed: {e}",
+            trace_id,
+            code="model_error",
+        )
         return Response(response=json.dumps(body), status=status, headers=headers)
 
     # Build spec-shaped response while preserving internal fields
     meta: Dict[str, Any] = {
         "model": model_used,
         "trace_id": trace_id,
+        "status": "ok",
     }
     if isinstance(usage, dict):
         if "input_tokens" in usage:
