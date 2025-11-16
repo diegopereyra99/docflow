@@ -237,7 +237,6 @@ def _parse_schema(schema_str: str) -> Dict[str, Any]:
 
 def _collect_files_from_multipart(request) -> Tuple[List[Tuple[str, bytes, str]], int]:
     files: List[Tuple[str, bytes, str]] = []
-    file_uris: List[Tuple[str, str]] = []
     total = 0
     for f in request.files.getlist("files[]"):
         data = f.read()
@@ -245,6 +244,105 @@ def _collect_files_from_multipart(request) -> Tuple[List[Tuple[str, bytes, str]]
         total += len(data)
         files.append((f.filename or "file", data, f.mimetype or "application/octet-stream"))
     return files, total
+
+
+def _normalize_json_files(body_files: Any, trace_id: str) -> Tuple[List[Dict[str, Any]], int, Tuple[Dict[str, Any], int, Dict[str, str]] | None]:
+    """Normalize JSON `files` into the unified internal structure.
+
+    Supports both:
+    - Spec shape: {gcs_uri|url|content(base64), mime_type, filename}
+    - Legacy v2 shape: {uri|signedUrl, mime, name}
+
+    Returns (files_unified, total_bytes_from_content, error_tuple_or_none).
+    Any validation error makes the whole request invalid (binary success).
+    """
+    files_unified: List[Dict[str, Any]] = []
+    total_bytes = 0
+
+    if body_files is None:
+        return files_unified, total_bytes, None
+
+    if not isinstance(body_files, list):
+        body, status, headers = _bad_request(
+            "Field 'files' must be a list when provided",
+            trace_id,
+            code="invalid_files",
+            field="files",
+        )
+        return [], 0, (body, status, headers)
+
+    for idx, item in enumerate(body_files):
+        if not isinstance(item, dict):
+            body, status, headers = _bad_request(
+                "Each item in 'files' must be an object",
+                trace_id,
+                code="invalid_files",
+                field=f"files[{idx}]",
+            )
+            return [], 0, (body, status, headers)
+
+        # Detect spec-style shape
+        is_spec_style = any(
+            key in item for key in ("gcs_uri", "url", "content", "mime_type", "filename")
+        )
+
+        if is_spec_style:
+            gcs_uri = item.get("gcs_uri")
+            url = item.get("url")
+            content_b64 = item.get("content")
+            mime = item.get("mime_type") or item.get("mime") or "application/octet-stream"
+            name = item.get("filename") or item.get("name") or "file"
+
+            sources = [
+                ("gcs_uri", gcs_uri),
+                ("url", url),
+                ("content", content_b64),
+            ]
+            present_sources = [(label, val) for label, val in sources if isinstance(val, str) and val]
+
+            if len(present_sources) != 1:
+                body, status, headers = _bad_request(
+                    "Each file must specify exactly one of gcs_uri, url, or content",
+                    trace_id,
+                    code="invalid_files",
+                    field=f"files[{idx}]",
+                )
+                return [], 0, (body, status, headers)
+
+            label, value = present_sources[0]
+            if label == "content":
+                # Base64-encoded content
+                try:
+                    raw = base64.b64decode(value)
+                except Exception:
+                    body, status, headers = _bad_request(
+                        "File 'content' must be valid base64",
+                        trace_id,
+                        code="invalid_file_content",
+                        field=f"files[{idx}].content",
+                    )
+                    return [], 0, (body, status, headers)
+                total_bytes += len(raw)
+                files_unified.append({"name": name, "data": raw, "mime": mime})
+            else:
+                # gcs_uri or url are passed through as URI for Vertex
+                files_unified.append({"name": name, "uri": value, "mime": mime})
+        else:
+            # Legacy v2 shape: {uri|signedUrl, mime, name}
+            uri = item.get("uri") or item.get("signedUrl")
+            mime = item.get("mime") or "application/octet-stream"
+            name = item.get("name") or "file"
+            if not isinstance(uri, str) or not uri:
+                body, status, headers = _bad_request(
+                    "Each file must include 'uri' (or 'gcs_uri'/'url'/'content' in the new format)",
+                    trace_id,
+                    code="invalid_files",
+                    field=f"files[{idx}]",
+                )
+                return [], 0, (body, status, headers)
+            files_unified.append({"name": name, "uri": uri, "mime": mime})
+
+    return files_unified, total_bytes, None
 
 
 def _parts_from_files(files: List[Tuple[str, bytes, str]]) -> List["Part"]:
@@ -431,16 +529,14 @@ def extract_data(request):
             "Do not make up data. Use null if information is missing. Respond strictly matching the provided schema.",
         )
         model_name = payload.get("model", DEFAULT_MODEL)
-        # Optional: accept URI-based files in JSON body
+        # Accept files in JSON body (spec-style or legacy)
         body_files = payload.get("files")
-        if isinstance(body_files, list):
-            for item in body_files:
-                if isinstance(item, dict):
-                    uri = item.get("uri") or item.get("signedUrl")
-                    mime = item.get("mime") or "application/octet-stream"
-                    name = item.get("name") or "file"
-                    if isinstance(uri, str) and uri:
-                        files_unified.append({"name": name, "uri": uri, "mime": mime})
+        files_from_json, bytes_from_json, err = _normalize_json_files(body_files, trace_id)
+        if err is not None:
+            body, status, headers = err
+            return Response(response=json.dumps(body), status=status, headers=headers)
+        files_unified.extend(files_from_json)
+        total_bytes += bytes_from_json
 
     if not schema_str:
         body, status, headers = _bad_request(
