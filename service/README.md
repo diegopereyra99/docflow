@@ -96,14 +96,14 @@ Examples of rejected types:
 For these, you will see a self-explanatory error with the unsupported MIME and the whitelist.
 
 ## Run Locally
-1) Copy and edit env file:
-  ```bash
-  cd extract-data-http
+1) (Optional) Copy and edit env file:
+   ```bash
+   cd service
    cp .env.example .env
    # edit .env as needed
    ```
 
-2) Create and activate a virtualenv, then start the local server:
+2) Create and activate a virtualenv, then start the local server from the repo root:
    ```bash
    python3 -m venv .venv
    source .venv/bin/activate
@@ -188,110 +188,98 @@ Create a dedicated service account and grant the minimal roles to call Vertex AI
      --role="roles/logging.logWriter"
    ```
 
-4) (Optional) Allow public invocation of the deployed HTTP endpoint. You can skip this if you plan to keep it private and use IAM/OIDC instead:
+4) Grant Cloud Run invocation rights to the calling service account(s).  
+   This service is intended to be private (IAM-only), so **do not** grant `allUsers`:
    ```bash
-   gcloud projects add-iam-policy-binding $GOOGLE_CLOUD_PROJECT \
-     --member="allUsers" \
+   CALLER_SA_EMAIL="caller-sa@$GOOGLE_CLOUD_PROJECT.iam.gserviceaccount.com"
+
+   gcloud run services add-iam-policy-binding document-analyzer \
+     --region="$GOOGLE_CLOUD_LOCATION" \
+     --member="serviceAccount:$CALLER_SA_EMAIL" \
      --role="roles/run.invoker"
    ```
 
-## Deploy as Cloud Function (Gen2)
-Run from the repo root and use your existing env values (from `functions/extract-data-http/.env`):
+## Deploy to Cloud Run (authenticated only)
 
-```bash
-# Variables (taken from your env)
-PROJECT_ID="$GOOGLE_CLOUD_PROJECT"
-REGION="$GOOGLE_CLOUD_LOCATION"
-SA_EMAIL="${SERVICE_ACCOUNT_ID}@${PROJECT_ID}.iam.gserviceaccount.com"
+Run from the repo root and use your existing env values:
 
-gcloud functions deploy extract-data \
-  --gen2 \
-  --region="$REGION" \
-  --runtime=python311 \
-  --entry-point=extract_data \
-  --source=functions/extract-data-http \
-  --trigger-http \
-  --allow-unauthenticated \
-  --service-account="$SA_EMAIL" \
-  --memory=512MiB \
-  --timeout=60s \
-  --set-env-vars=GOOGLE_GENAI_USE_VERTEXAI=${GOOGLE_GENAI_USE_VERTEXAI:-false},GOOGLE_CLOUD_LOCATION=$REGION,DEFAULT_GEMINI_MODEL=${DEFAULT_GEMINI_MODEL:-gemini-2.5-flash},MAX_TOTAL_UPLOAD_BYTES=${MAX_TOTAL_UPLOAD_BYTES:-20971520},PUBSUB_OUTPUT_TOPIC=${PUBSUB_OUTPUT_TOPIC:-},BUCKET_NAME=${BUCKET_NAME:-}
-
-# Increase `--memory` (e.g., `1Gi`) or `--timeout` (e.g., `300s`) if needed.
-
-URL=$(gcloud functions describe extract-data --region="$REGION" --gen2 --format='value(serviceConfig.uri)')
-curl -s -X POST "$URL/extract-data" \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "prompt":"Extract basic fields",
-    "schema":"{\"type\":\"OBJECT\",\"properties\":{\"name\":{\"type\":\"STRING\"}},\"required\":[\"name\"]}"
-  }' | jq .
-```
-
-## Deploy to Cloud Run
-You can deploy the same HTTP endpoint as a standalone Cloud Run service. Commands are intended to be run from the repo root and use your existing env vars.
-
-Variables used (from your env)
-- `PROJECT_ID="$GOOGLE_CLOUD_PROJECT"`
-- `REGION="$GOOGLE_CLOUD_LOCATION"`
-- `SA_EMAIL="${SERVICE_ACCOUNT_ID}@${PROJECT_ID}.iam.gserviceaccount.com"`
-
-Option A — Source deploy (no image flag)
 ```bash
 PROJECT_ID="$GOOGLE_CLOUD_PROJECT"
 REGION="$GOOGLE_CLOUD_LOCATION"
+SERVICE_ACCOUNT_ID="${SERVICE_ACCOUNT_ID:-gemini-extractor-sa}"
 SA_EMAIL="${SERVICE_ACCOUNT_ID}@${PROJECT_ID}.iam.gserviceaccount.com"
 
-gcloud run deploy extract-data-http \
+gcloud run deploy document-analyzer \
   --region "$REGION" \
-  --source functions/extract-data-http \
-  --allow-unauthenticated \
+  --source service \
   --service-account "$SA_EMAIL" \
+  --no-allow-unauthenticated \
   --memory 1Gi \
   --timeout 300 \
   --set-env-vars=GOOGLE_GENAI_USE_VERTEXAI=${GOOGLE_GENAI_USE_VERTEXAI:-false},GOOGLE_CLOUD_LOCATION=$REGION,DEFAULT_GEMINI_MODEL=${DEFAULT_GEMINI_MODEL:-gemini-2.5-flash},MAX_TOTAL_UPLOAD_BYTES=${MAX_TOTAL_UPLOAD_BYTES:-20971520},PUBSUB_OUTPUT_TOPIC=${PUBSUB_OUTPUT_TOPIC:-},BUCKET_NAME=${BUCKET_NAME:-}
 ```
 
-Option B — Image deploy (explicit image)
+To deploy from a pre-built image instead of source:
+
 ```bash
 PROJECT_ID="$GOOGLE_CLOUD_PROJECT"
 REGION="$GOOGLE_CLOUD_LOCATION"
+SERVICE_ACCOUNT_ID="${SERVICE_ACCOUNT_ID:-gemini-extractor-sa}"
 SA_EMAIL="${SERVICE_ACCOUNT_ID}@${PROJECT_ID}.iam.gserviceaccount.com"
-IMAGE="gcr.io/$PROJECT_ID/extract-data-http"
+IMAGE="gcr.io/$PROJECT_ID/document-analyzer"
 
-# Build container image from source
-gcloud builds submit --tag "$IMAGE" functions/extract-data-http
+gcloud builds submit --tag "$IMAGE" service
 
-# Deploy the built image
-gcloud run deploy extract-data-http \
+gcloud run deploy document-analyzer \
   --region "$REGION" \
   --image "$IMAGE" \
-  --allow-unauthenticated \
   --service-account "$SA_EMAIL" \
+  --no-allow-unauthenticated \
   --memory 1Gi \
   --timeout 300 \
   --set-env-vars=GOOGLE_GENAI_USE_VERTEXAI=${GOOGLE_GENAI_USE_VERTEXAI:-false},GOOGLE_CLOUD_LOCATION=$REGION,DEFAULT_GEMINI_MODEL=${DEFAULT_GEMINI_MODEL:-gemini-2.5-flash},MAX_TOTAL_UPLOAD_BYTES=${MAX_TOTAL_UPLOAD_BYTES:-20971520},PUBSUB_OUTPUT_TOPIC=${PUBSUB_OUTPUT_TOPIC:-},BUCKET_NAME=${BUCKET_NAME:-}
-
-# Alternative Artifact Registry image (uncomment to use):
-# IMAGE="$REGION-docker.pkg.dev/$PROJECT_ID/default/extract-data-http:latest"
-# gcloud builds submit --tag "$IMAGE" functions/extract-data-http
-# gcloud run deploy extract-data-http --region "$REGION" --image "$IMAGE" ...
 ```
 
-3) Invoke the service:
+## Calling the service with a service account (IAM auth)
+
+Because the service is deployed with `--no-allow-unauthenticated`, only identities with
+`roles/run.invoker` can call it. Below is a simple pattern using a service account key
+and `gcloud` to obtain an **identity token**.
+
+1) Get the service URL:
+
    ```bash
-   URL=$(gcloud run services describe extract-data-http --region "$REGION" --format 'value(status.url)')
-   curl -s -X POST "$URL/extract-data" \
-     -H 'Content-Type: application/json' \
+   REGION="$GOOGLE_CLOUD_LOCATION"
+   SERVICE_URL=$(gcloud run services describe document-analyzer \
+     --region "$REGION" \
+     --format 'value(status.url)')
+   echo "$SERVICE_URL"
+   ```
+
+2) Activate the calling service account locally (the same one you granted `roles/run.invoker`):
+
+   ```bash
+   gcloud auth activate-service-account caller-sa@$GOOGLE_CLOUD_PROJECT.iam.gserviceaccount.com \
+     --key-file=/path/to/caller-sa-key.json
+   ```
+
+3) Obtain an identity token for the Cloud Run service and call `/extract`:
+
+   ```bash
+   TOKEN=$(gcloud auth print-identity-token --audiences="$SERVICE_URL")
+
+   curl -s -X POST "$SERVICE_URL/extract" \
+     -H "Authorization: Bearer $TOKEN" \
+     -H "Content-Type: application/json" \
      -d '{
        "prompt":"Extract basic fields",
+       "system_instruction":"Do not make up data; return JSON",
        "schema":"{\"type\":\"OBJECT\",\"properties\":{\"name\":{\"type\":\"STRING\"}},\"required\":[\"name\"]}"
      }' | jq .
    ```
 
-Notes:
-- The Flask app routes both `/extract-data` and `/` to the same handler to preserve the original behavior.
-- Set `GOOGLE_GENAI_USE_VERTEXAI=true` and `GOOGLE_CLOUD_PROJECT` on the service to call real models via Vertex AI.
+As long as the calling service account has the `run.invoker` role on `document-analyzer`,
+this request will be authenticated by Cloud Run and reach your Flask app.
 
 ## Events Router (Pub/Sub Push)
 The service exposes a generic events router at `/events/<event_name>` that accepts Pub/Sub push messages. Currently supported handler:
