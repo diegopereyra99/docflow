@@ -11,6 +11,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font
 
 from docflow.core.extraction.engine import ExtractionResult, MultiResult
+from docflow.core.errors import DocumentError, ExtractionError, ProviderError
 from docflow.core.utils.io import load_structured
 from docflow.sdk.client import DocflowClient
 from docflow.sdk.config import DEFAULT_CONFIG_PATH, SdkConfig, load_config, merge_cli_overrides
@@ -136,6 +137,12 @@ def _print_output(result: Any, output_format: str, output_path: Path | None) -> 
         raise typer.Exit(code=1)
 
 
+def _handle_exc(err: Exception) -> None:
+    """Print a concise error and exit non-zero."""
+    typer.echo(f"Error: {err}", err=True)
+    raise typer.Exit(code=1)
+
+
 def _make_client(ctx: Context, mode: str | None, base_url: str | None) -> DocflowClient:
     cfg = merge_cli_overrides(ctx.config, mode=mode, endpoint=base_url)
     return DocflowClient(mode=cfg.mode, endpoint_url=cfg.endpoint_url, config=cfg)
@@ -207,9 +214,8 @@ def extract(
         else:
             schema_dict = load_structured(schema)
             result = client.extract(schema_dict, [str(p) for p in files], multi_mode=multi)
-    except (ConfigError, RemoteServiceError) as exc:
-        typer.echo(f"Error: {exc}", err=True)
-        raise typer.Exit(code=1)
+    except (ConfigError, RemoteServiceError, DocumentError, ProviderError, ExtractionError, FileNotFoundError) as exc:
+        _handle_exc(exc)
 
     _print_output(result, cfg_output_format, output_path)
 
@@ -227,7 +233,10 @@ def describe(
     context: Context = ctx.obj
     cfg_output_format = output_format or context.config.default_output_format
     client = _make_client(context, mode=mode, base_url=base_url or None)
-    result = client.describe([str(p) for p in files], multi_mode=multi)
+    try:
+        result = client.describe([str(p) for p in files], multi_mode=multi)
+    except (ConfigError, RemoteServiceError, DocumentError, ProviderError, ExtractionError, FileNotFoundError) as exc:
+        _handle_exc(exc)
     _print_output(result, cfg_output_format, output_path)
 
 
@@ -245,7 +254,10 @@ def run(
     context: Context = ctx.obj
     cfg_output_format = output_format or context.config.default_output_format
     client = _make_client(context, mode=mode, base_url=base_url or None)
-    result = client.run_profile(profile_name, [str(p) for p in files], multi_mode=multi)
+    try:
+        result = client.run_profile(profile_name, [str(p) for p in files], multi_mode=multi)
+    except (ConfigError, RemoteServiceError, DocumentError, ProviderError, ExtractionError, FileNotFoundError) as exc:
+        _handle_exc(exc)
     _print_output(result, cfg_output_format, output_path)
 
 
