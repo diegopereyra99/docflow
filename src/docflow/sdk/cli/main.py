@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, List
 
 import typer
+import click
 from openpyxl import Workbook
 from openpyxl.styles import Font
 
@@ -26,9 +27,6 @@ class Context:
         self.output_path: Optional[Path] = None
         self.multi = self.config.mode  # placeholder, overwritten per command
         self.verbose = False
-
-
-pass_context = typer.make_pass_decorator(Context, ensure=True)
 
 
 # --- utility helpers ---
@@ -147,25 +145,29 @@ def _make_client(ctx: Context, mode: str | None, base_url: str | None) -> Docflo
 
 
 @app.callback()
-@pass_context
-def main(ctx: Context, verbose: bool = typer.Option(False, "--verbose", help="Verbose output")) -> None:
-    ctx.verbose = verbose
+def main(
+    ctx: typer.Context,
+    verbose: bool = typer.Option(False, "--verbose", help="Verbose output"),
+) -> None:
+    if ctx.obj is None:
+        ctx.obj = Context()
+    ctx.obj.verbose = verbose
 
 
 @app.command()
-@pass_context
 def init(
-    ctx: Context,
+    ctx: typer.Context,
     base_url: str = typer.Option("", "--base-url", help="Default service endpoint"),
     default_output_format: str = typer.Option("json", "--default-output-format", help="Default output format"),
     default_output_dir: Path = typer.Option(Path("./outputs"), "--default-output-dir", help="Default output directory"),
 ) -> None:
+    context: Context = ctx.obj
     cfg_dir = DEFAULT_CONFIG_PATH.parent
     cfg_dir.mkdir(parents=True, exist_ok=True)
     payload = {
         "docflow": {
-            "mode": ctx.config.mode,
-            "endpoint": base_url or ctx.config.endpoint_url,
+            "mode": context.config.mode,
+            "endpoint": base_url or context.config.endpoint_url,
             "default_output_format": default_output_format,
             "default_output_dir": str(default_output_dir),
         }
@@ -175,9 +177,8 @@ def init(
 
 
 @app.command()
-@pass_context
 def extract(
-    ctx: Context,
+    ctx: typer.Context,
     schema: Optional[Path] = typer.Option(None, "--schema", help="Path to schema file"),
     all_fields: bool = typer.Option(False, "--all", help="Schema-less extraction"),
     multi: str = typer.Option("per_file", "--multi", help="per_file|aggregate|both"),
@@ -187,6 +188,7 @@ def extract(
     output_path: Optional[Path] = typer.Option(None, "--output-path", help="Write output to file"),
     files: List[Path] = typer.Argument(..., exists=False, readable=False, help="Document files"),
 ) -> None:
+    context: Context = ctx.obj
     if not all_fields and schema is None:
         typer.echo("--schema is required unless --all is specified", err=True)
         raise typer.Exit(code=1)
@@ -194,10 +196,10 @@ def extract(
         typer.echo("--schema and --all are mutually exclusive", err=True)
         raise typer.Exit(code=1)
 
-    cfg_output_format = output_format or ctx.config.default_output_format
-    ctx.output_path = output_path
+    cfg_output_format = output_format or context.config.default_output_format
+    context.output_path = output_path
 
-    client = _make_client(ctx, mode=mode, base_url=base_url or None)
+    client = _make_client(context, mode=mode, base_url=base_url or None)
 
     try:
         if all_fields:
@@ -213,9 +215,8 @@ def extract(
 
 
 @app.command()
-@pass_context
 def describe(
-    ctx: Context,
+    ctx: typer.Context,
     multi: str = typer.Option("per_file", "--multi", help="per_file|aggregate|both"),
     base_url: str = typer.Option("", "--base-url", help="Remote service base URL"),
     mode: Optional[str] = typer.Option(None, "--mode", help="local or remote"),
@@ -223,16 +224,16 @@ def describe(
     output_path: Optional[Path] = typer.Option(None, "--output-path", help="Write output to file"),
     files: List[Path] = typer.Argument(..., help="Document files"),
 ) -> None:
-    cfg_output_format = output_format or ctx.config.default_output_format
-    client = _make_client(ctx, mode=mode, base_url=base_url or None)
+    context: Context = ctx.obj
+    cfg_output_format = output_format or context.config.default_output_format
+    client = _make_client(context, mode=mode, base_url=base_url or None)
     result = client.describe([str(p) for p in files], multi_mode=multi)
     _print_output(result, cfg_output_format, output_path)
 
 
 @app.command()
-@pass_context
 def run(
-    ctx: Context,
+    ctx: typer.Context,
     profile_name: str = typer.Argument(..., help="Profile name"),
     multi: str = typer.Option("per_file", "--multi", help="per_file|aggregate|both"),
     base_url: str = typer.Option("", "--base-url", help="Remote service base URL"),
@@ -241,8 +242,9 @@ def run(
     output_path: Optional[Path] = typer.Option(None, "--output-path", help="Write output to file"),
     files: List[Path] = typer.Argument(..., help="Document files"),
 ) -> None:
-    cfg_output_format = output_format or ctx.config.default_output_format
-    client = _make_client(ctx, mode=mode, base_url=base_url or None)
+    context: Context = ctx.obj
+    cfg_output_format = output_format or context.config.default_output_format
+    client = _make_client(context, mode=mode, base_url=base_url or None)
     result = client.run_profile(profile_name, [str(p) for p in files], multi_mode=multi)
     _print_output(result, cfg_output_format, output_path)
 
@@ -251,17 +253,17 @@ profiles_app = typer.Typer(help="Profile utilities")
 
 
 @profiles_app.command("list")
-@pass_context
-def profiles_list(ctx: Context) -> None:
-    names = profiles.list_profiles(ctx.config)
+def profiles_list(ctx: typer.Context) -> None:
+    context: Context = ctx.obj
+    names = profiles.list_profiles(context.config)
     for name in names:
         typer.echo(name)
 
 
 @profiles_app.command("show")
-@pass_context
-def profiles_show(ctx: Context, profile_name: str = typer.Argument(...)) -> None:
-    profile = profiles.load_profile(profile_name, ctx.config)
+def profiles_show(ctx: typer.Context, profile_name: str = typer.Argument(...)) -> None:
+    context: Context = ctx.obj
+    profile = profiles.load_profile(profile_name, context.config)
     payload = {
         "name": profile.name,
         "mode": profile.mode,
