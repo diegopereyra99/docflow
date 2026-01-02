@@ -6,17 +6,15 @@ from pathlib import Path
 from typing import Any, Optional, List
 
 import typer
-import click
-from openpyxl import Workbook
-from openpyxl.styles import Font
 
 from docflow.core.extraction.engine import ExtractionResult, MultiResult
 from docflow.core.errors import DocumentError, ExtractionError, ProviderError
 from docflow.core.utils.io import load_structured
 from docflow.sdk.client import DocflowClient
-from docflow.sdk.config import DEFAULT_CONFIG_PATH, SdkConfig, load_config, merge_cli_overrides
+from docflow.sdk.config import DEFAULT_CONFIG_PATH, load_config, merge_cli_overrides
 from docflow.sdk.errors import ConfigError, RemoteServiceError
 from docflow.sdk import profiles
+from docflow.sdk.cli.excel_exporter import export_json_to_excel
 
 app = typer.Typer(add_completion=False, help="DocFlow CLI")
 
@@ -51,37 +49,8 @@ def _write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-def _export_excel_single(data: dict, path: Path) -> None:
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "GlobalFields"
-    bold = Font(bold=True)
-
-    global_fields = {k: v for k, v in data.items() if not isinstance(v, list)}
-    row = 1
-    for name, value in global_fields.items():
-        ws.cell(row=row, column=1, value=name).font = bold
-        ws.cell(row=row, column=2, value=json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else value)
-        row += 1
-
-    for name, records in data.items():
-        if not isinstance(records, list):
-            continue
-        sheet = wb.create_sheet(f"RS_{name}")
-        headers = set()
-        for rec in records:
-            if isinstance(rec, dict):
-                headers.update(rec.keys())
-        headers_sorted = sorted(headers)
-        for col, header in enumerate(headers_sorted, start=1):
-            sheet.cell(row=1, column=col, value=header).font = bold
-        for r_idx, rec in enumerate(records, start=2):
-            if not isinstance(rec, dict):
-                continue
-            for c_idx, header in enumerate(headers_sorted, start=1):
-                sheet.cell(row=r_idx, column=c_idx, value=rec.get(header))
-    _ensure_directory(path)
-    wb.save(path)
+def _export_excel_single(data: Any, path: Path) -> None:
+    export_json_to_excel(data, path)
 
 
 def _handle_excel(result: Any, output_path: Path | None) -> None:
@@ -148,6 +117,15 @@ def _make_client(ctx: Context, mode: str | None, base_url: str | None) -> Docflo
     return DocflowClient(mode=cfg.mode, endpoint_url=cfg.endpoint_url, config=cfg)
 
 
+def _load_groups(path: Path | None) -> Optional[list]:
+    if not path:
+        return None
+    data = load_structured(path)
+    if not isinstance(data, list):
+        raise ConfigError("--groups-file must contain a JSON/YAML list")
+    return data
+
+
 # --- CLI commands ---
 
 
@@ -171,16 +149,16 @@ def init(
     context: Context = ctx.obj
     cfg_dir = DEFAULT_CONFIG_PATH.parent
     cfg_dir.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "docflow": {
-            "mode": context.config.mode,
-            "endpoint": base_url or context.config.endpoint_url,
-            "default_output_format": default_output_format,
-            "default_output_dir": str(default_output_dir),
-        }
-    }
-    DEFAULT_CONFIG_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    typer.echo(f"Wrote config to {DEFAULT_CONFIG_PATH}")
+    lines = ["[docflow]"]
+    lines.append(f"mode = \"{context.config.mode}\"")
+    endpoint_val = base_url or context.config.endpoint_url
+    if endpoint_val:
+        lines.append(f"endpoint = \"{endpoint_val}\"")
+    lines.append(f"default_output_format = \"{default_output_format}\"")
+    if default_output_dir:
+        lines.append(f"default_output_dir = \"{default_output_dir}\"")
+    DEFAULT_CONFIG_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    typer.echo(f"Wrote TOML config to {DEFAULT_CONFIG_PATH}")
 
 
 @app.command()
@@ -196,17 +174,21 @@ def extract(
     files: List[Path] = typer.Argument(..., exists=False, readable=False, help="Document files"),
 ) -> None:
     context: Context = ctx.obj
+    effective_mode = mode or context.config.mode
     if not all_fields and schema is None:
         typer.echo("--schema is required unless --all is specified", err=True)
         raise typer.Exit(code=1)
     if all_fields and schema is not None:
         typer.echo("--schema and --all are mutually exclusive", err=True)
         raise typer.Exit(code=1)
+    if effective_mode == "remote":
+        typer.echo("Schema-based extraction is only supported in local mode. Use `run` with a profile for remote calls.", err=True)
+        raise typer.Exit(code=1)
 
     cfg_output_format = output_format or context.config.default_output_format
     context.output_path = output_path
 
-    client = _make_client(context, mode=mode, base_url=base_url or None)
+    client = _make_client(context, mode=effective_mode, base_url=base_url or None)
 
     try:
         if all_fields:
@@ -231,8 +213,9 @@ def describe(
     files: List[Path] = typer.Argument(..., help="Document files"),
 ) -> None:
     context: Context = ctx.obj
+    effective_mode = mode or context.config.mode
     cfg_output_format = output_format or context.config.default_output_format
-    client = _make_client(context, mode=mode, base_url=base_url or None)
+    client = _make_client(context, mode=effective_mode, base_url=base_url or None)
     try:
         result = client.describe([str(p) for p in files], multi_mode=multi)
     except (ConfigError, RemoteServiceError, DocumentError, ProviderError, ExtractionError, FileNotFoundError) as exc:
@@ -244,18 +227,57 @@ def describe(
 def run(
     ctx: typer.Context,
     profile_name: str = typer.Argument(..., help="Profile name"),
-    multi: str = typer.Option("per_file", "--multi", help="per_file|aggregate|both"),
+    multi: str = typer.Option("per_file", "--multi", help="per_file|aggregate|both (local)"),
+    service_mode: str = typer.Option("per_file", "--service-mode", help="single|per_file|grouped (remote service)"),
     base_url: str = typer.Option("", "--base-url", help="Remote service base URL"),
     mode: Optional[str] = typer.Option(None, "--mode", help="local or remote"),
     output_format: Optional[str] = typer.Option(None, "--output-format", help="print|json|excel"),
     output_path: Optional[Path] = typer.Option(None, "--output-path", help="Write output to file"),
-    files: List[Path] = typer.Argument(..., help="Document files"),
+    workers: Optional[int] = typer.Option(None, "--workers", help="Worker count for remote /extract"),
+    model: Optional[str] = typer.Option(None, "--model", help="Model override for remote"),
+    temperature: Optional[float] = typer.Option(None, "--temperature", help="Temperature for remote"),
+    top_p: Optional[float] = typer.Option(None, "--top-p", help="Top-p for remote"),
+    max_output_tokens: Optional[int] = typer.Option(None, "--max-output-tokens", help="Max output tokens for remote"),
+    repair_attempts: int = typer.Option(1, "--repair-attempts", help="Repair attempts for remote (0 to disable)"),
+    groups_file: Optional[Path] = typer.Option(None, "--groups-file", help="JSON/YAML groups file for grouped mode (remote)"),
+    files: List[Path] = typer.Argument([], help="Document files (required unless using --groups-file with grouped service mode)"),
 ) -> None:
     context: Context = ctx.obj
     cfg_output_format = output_format or context.config.default_output_format
-    client = _make_client(context, mode=mode, base_url=base_url or None)
+    effective_mode = mode or context.config.mode
+    service_mode = service_mode.lower()
+    client = _make_client(context, mode=effective_mode, base_url=base_url or None)
+    groups = None
     try:
-        result = client.run_profile(profile_name, [str(p) for p in files], multi_mode=multi)
+        groups = _load_groups(groups_file)
+    except Exception as exc:
+        _handle_exc(exc)
+
+    if effective_mode == "remote":
+        if service_mode == "grouped" and not groups:
+            _handle_exc(ConfigError("Grouped remote calls require --groups-file"))
+        if service_mode != "grouped" and not files:
+            _handle_exc(ConfigError("At least one file is required for remote calls"))
+    else:
+        if not files:
+            _handle_exc(ConfigError("At least one file is required"))
+
+    try:
+        result = client.run_profile(
+            profile_name,
+            [str(p) for p in files],
+            multi_mode=multi,
+            service_mode=service_mode,
+            workers=workers,
+            model=model,
+            parameters={
+                "temperature": temperature,
+                "top_p": top_p,
+                "max_output_tokens": max_output_tokens,
+            },
+            repair_attempts=repair_attempts,
+            groups=groups,
+        )
     except (ConfigError, RemoteServiceError, DocumentError, ProviderError, ExtractionError, FileNotFoundError) as exc:
         _handle_exc(exc)
     _print_output(result, cfg_output_format, output_path)

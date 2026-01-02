@@ -21,12 +21,12 @@ Set environment variables as needed:
 - `DOCFLOW_GCP_PROJECT`
 - `DOCFLOW_LOCATION`
 - `DOCFLOW_PUBSUB_TOPIC_RESULTS`
- - `DOCFLOW_PROFILES_BACKEND` (`fs` or `gcs`) – enable profile catalog endpoints
- - `DOCFLOW_PROFILES_PREFIX` (default: `profiles/`)
- - `DOCFLOW_PROFILES_BUCKET` (for `gcs` backend)
- - `DOCFLOW_PROFILES_ROOT_DIR` (for `fs` backend; defaults to CWD)
- - `DOCFLOW_CATALOG_CACHE_TTL` (seconds; default 600)
- - `DOCFLOW_MAX_WORKERS` (default: 8) and `DOCFLOW_DEFAULT_WORKERS` (default: 4) – apply to `/extract`
+- `DOCFLOW_PROFILES_BACKEND` (`fs` or `gcs`) – enable profile catalog endpoints
+- `DOCFLOW_PROFILES_PREFIX` (default: `profiles/`)
+- `DOCFLOW_PROFILES_BUCKET` (for `gcs` backend)
+- `DOCFLOW_PROFILES_ROOT_DIR` (for `fs` backend; defaults to CWD)
+- `DOCFLOW_CATALOG_CACHE_TTL` (seconds; default 600)
+- `DOCFLOW_MAX_WORKERS` (default: 8) and `DOCFLOW_DEFAULT_WORKERS` (default: 4) – apply to `/extract`
 
 ## Examples
 

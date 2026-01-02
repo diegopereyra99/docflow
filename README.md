@@ -15,6 +15,11 @@ pip install -e .
 pytest docflow/tests -q
 ```
 
+Install the CLI without cloning (from this repo):
+```bash
+pip install "git+https://github.com/diegopereyra99/docflow.git@main#egg=docflow"
+```
+
 Extract locally (CLI):
 ```bash
 # Use your own JSON Schema
@@ -72,6 +77,9 @@ Common options:
 - `--multi per_file|aggregate|both` – output shape for multiple files
 - `--output-format print|json|excel` – default `print` (Excel exports arrays/objects)
 - `--mode local|remote` and `--base-url http://host:8080` – use the HTTP service
+- Remote service examples:
+  - Per-file: `docflow run importaciones/dua gs://bucket/doc.pdf --mode remote --base-url http://localhost:8080 --service-mode per_file --workers 2`
+  - Grouped: `docflow run importaciones/dua --mode remote --base-url http://localhost:8080 --service-mode grouped --groups-file groups.json`
 
 SDK config file (optional): `~/.docflow/config.toml`
 ```
