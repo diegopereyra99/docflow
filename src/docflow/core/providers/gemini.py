@@ -142,6 +142,7 @@ class GeminiProvider(ModelProvider):
             cfg_kwargs: Dict[str, Any] = {
                 "response_mime_type": "application/json",
                 "temperature": opts.temperature,
+                "top_p": opts.top_p,
                 "max_output_tokens": opts.max_output_tokens,
             }
             if schema is not None:

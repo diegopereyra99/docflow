@@ -11,6 +11,7 @@ from ..models.schema_defs import InternalSchema
 class ProviderOptions:
     model_name: str | None = None
     temperature: float | None = None
+    top_p: float | None = None
     max_output_tokens: int | None = None
     # Attachment strategy:
     # - None or "bytes": load and attach file bytes (current default)
@@ -23,6 +24,7 @@ class ProviderOptions:
         return ProviderOptions(
             model_name=override.model_name or self.model_name,
             temperature=self.temperature if override.temperature is None else override.temperature,
+            top_p=self.top_p if override.top_p is None else override.top_p,
             max_output_tokens=self.max_output_tokens
             if override.max_output_tokens is None
             else override.max_output_tokens,
