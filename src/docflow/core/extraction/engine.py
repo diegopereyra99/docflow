@@ -178,6 +178,7 @@ def extract(
     provider: ModelProvider | None = None,
     options: ProviderOptions | None = None,
     multi_mode: str | None = None,
+    repair_attempts: int = 0,
 ) -> ExtractionResult | List[ExtractionResult] | MultiResult:
     if not docs:
         raise DocumentError("No documents provided")
@@ -219,7 +220,7 @@ def extract(
                     profile=profile,
                     system_instruction=sys_inst,
                     attachments=[(name, content)],
-                    repair_attempts=0,
+                    repair_attempts=repair_attempts,
                 )
             )
 
@@ -236,7 +237,7 @@ def extract(
             profile=profile,
             system_instruction=sys_inst,
             attachments=attachments,
-            repair_attempts=0,
+            repair_attempts=repair_attempts,
         )
 
     if mode == "per_file":
