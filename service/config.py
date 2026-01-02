@@ -22,6 +22,9 @@ class ServiceConfig:
     profiles_prefix: str = "profiles/"
     profiles_root_dir: Optional[str] = None
     catalog_cache_ttl_seconds: int = 600
+    # Execution controls
+    max_workers: int = 8
+    default_workers: int = 4
 
 
 def load_service_config() -> ServiceConfig:
@@ -36,6 +39,8 @@ def load_service_config() -> ServiceConfig:
         profiles_prefix=os.environ.get("DOCFLOW_PROFILES_PREFIX", "profiles/"),
         profiles_root_dir=os.environ.get("DOCFLOW_PROFILES_ROOT_DIR"),
         catalog_cache_ttl_seconds=int(os.environ.get("DOCFLOW_CATALOG_CACHE_TTL", "600")),
+        max_workers=int(os.environ.get("DOCFLOW_MAX_WORKERS", "8")),
+        default_workers=int(os.environ.get("DOCFLOW_DEFAULT_WORKERS", "4")),
     )
 
 
